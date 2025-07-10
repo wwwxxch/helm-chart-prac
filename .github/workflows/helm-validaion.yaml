@@ -1,0 +1,82 @@
+name: Helm Chart Validation
+
+on:
+  push:
+    paths-ignore:
+      - README.md
+      - .pre-commit-config.yaml
+  pull_request:
+    paths-ignore:
+      - README.md
+      - .pre-commit-config.yaml
+
+jobs:
+  find-charts:
+    runs-on: ubuntu-latest
+    outputs:
+      chart-dirs: ${{ steps.find.outputs.dirs }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Find chart directories
+        id: find
+        run: |
+          dirs=$(find . -type f -name "Chart.yaml" -exec dirname {} \; | sed 's|^\./||' | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "Found chart directories: $dirs"
+          echo "dirs=${dirs}" >> $GITHUB_OUTPUT
+
+  validate:
+    runs-on: ubuntu-latest
+    needs: find-charts
+    if: needs.find-charts.outputs.chart-dirs != '[]'
+    strategy:
+      matrix:
+        chart-dir: ${{ fromJson(needs.find-charts.outputs.chart-dirs) }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: v3.12.0
+
+      - name: Validating Helm Chart
+        run: |
+          echo "Testing helm template for ${{ matrix.chart-dir }}"
+          helm template test-release ${{ matrix.chart-dir }} --dry-run
+          if [ $? -ne 0 ]; then
+            echo "Helm template failed for ${{ matrix.chart-dir }}"
+            exit 1
+          fi
+          echo "Helm template successful for ${{ matrix.chart-dir }}"
+
+      - name: Validate Values YAML
+        run: |
+          if [ -f "${{ matrix.chart-dir }}/values.yaml" ]; then
+            echo "Validating values.yaml for ${{ matrix.chart-dir }}"
+            helm show values "${{ matrix.chart-dir }}"
+            if [ $? -ne 0 ]; then
+              echo "values.yaml validation failed for ${{ matrix.chart-dir }}"
+              exit 1
+            fi
+            echo "values.yaml validation successful for ${{ matrix.chart-dir }}"
+          else
+            echo "values.yaml not found for ${{ matrix.chart-dir }}"
+          fi
+
+      - name: Summary
+        run: |
+          echo "Helm chart validation completed for ${{ matrix.chart-dir }}"
+          echo "Template rendering successful"
+
+  no-charts-found:
+    runs-on: ubuntu-latest
+    needs: find-charts
+    if: needs.find-charts.outputs.chart-dirs == '[]'
+    steps:
+      - name: No Charts Found
+        run: |
+          echo "No Helm charts found in this repository"
+          echo "This is expected if you're not working with Helm charts"
